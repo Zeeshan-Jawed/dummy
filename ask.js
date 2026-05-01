@@ -1,57 +1,34 @@
-const { initStore, search } = require("./vectorStore");
-const { askLLM, warmup } = require("./llm");
+const { answer } = require("./qa");
 
-const SCORE_THRESHOLD = Number(process.env.SCORE_THRESHOLD || 1.2);
-const TOP_K = Number(process.env.TOP_K || 3);
+async function main() {
+  const question = process.argv.slice(2).join(" ").trim() || "Ibrahim son name?";
 
-const SYSTEM_PROMPT = `You are an Islamic assistant that answers ONLY from the provided context.
+  console.log(`\nQuestion: ${question}`);
 
-STRICT RULES:
-- Use ONLY the text inside the "Context" block. Treat it as your single source of truth.
-- If the answer is not explicitly in the context, reply EXACTLY: "I don't know"
-- Do NOT use any prior knowledge, training data, or external sources.
-- Do NOT invent surah names, ayah numbers, hadith, or references.
-- Do NOT paraphrase quoted text; quote the exact words from the context.
-- Be concise. No preamble, no disclaimers.`;
+  const result = await answer(question, {
+    onToken: (t) => process.stdout.write(t),
+    onStage: (stage, info) => console.log(`\n[${stage}]`, JSON.stringify(info).slice(0, 200)),
+  });
 
-async function ask(question) {
-  await initStore();
-  warmup();
+  console.log("\n\n=== Answer ===");
+  console.log(result.answer);
+  console.log("==============");
 
-  const t0 = Date.now();
-  const results = await search(question, TOP_K);
-
-  const relevant = results.filter((r) => r.score <= SCORE_THRESHOLD);
-
-  if (relevant.length === 0) {
-    console.log("\nAnswer:\nI don't know");
-    console.log("\nSources:");
-    return;
+  if (result.rewrite) {
+    console.log("\nQuery rewrite:");
+    if (result.rewrite.paraphrase) console.log("  Paraphrase  :", result.rewrite.paraphrase);
+    if (result.rewrite.hypothetical) console.log("  Hypothetical:", result.rewrite.hypothetical);
+    if (result.rewrite.keywords) console.log("  Keywords    :", result.rewrite.keywords);
   }
 
-  const context = relevant
-    .map((r, i) => `[${i + 1}] (${r.metadata.source})\n${r.pageContent}`)
-    .join("\n\n");
+  console.log("\nSources:");
+  if (!result.sources.length) console.log("(none)");
+  result.sources.forEach((s) => console.log(`- ${s.source} (chunk ${s.chunk}, score ${s.score})`));
 
-  const prompt = `Context:
-${context}
-
-Question:
-${question}
-
-Answer using ONLY the context above. If not present, say "I don't know".`;
-
-  process.stdout.write("\nAnswer:\n");
-  await askLLM(prompt, {
-    system: SYSTEM_PROMPT,
-    onToken: (t) => process.stdout.write(t),
-  });
-
-  console.log("\n\nSources:");
-  relevant.forEach((r) => {
-    console.log(`- ${r.metadata.source} (chunk ${r.metadata.chunk}, score ${r.score.toFixed(3)})`);
-  });
-  console.log(`\n(took ${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+  console.log(`\n(took ${(result.tookMs / 1000).toFixed(1)}s)`);
 }
 
-ask("Who is the son that prophet ibrahim was commanded to sacrifice? Provide me the surah and ayah number for that detail?");
+main().catch((err) => {
+  console.error("Error:", err.message);
+  process.exit(1);
+});
